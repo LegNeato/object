@@ -7,6 +7,8 @@ use crate::write::elf::writer::*;
 use crate::write::string::StringId;
 use crate::write::*;
 
+mod limits;
+
 #[derive(Clone, Copy)]
 struct ComdatOffsets {
     offset: u64,
@@ -611,6 +613,28 @@ impl<'a> Object<'a> {
     pub(crate) fn elf_write(&self, buffer: &mut dyn WritableBuffer) -> Result<()> {
         // Create reloc section header names so we can reference them.
         let is_rela = self.elf_has_relocation_addend()?;
+        let is_64 = self.elf_is_64();
+        if !is_64 {
+            for section in &self.sections {
+                let SectionFlags::Elf { sh_flags, .. } = self.section_flags(section) else {
+                    return Err(Error(format!(
+                        "unimplemented section `{}` kind {:?}",
+                        section.name().unwrap_or(""),
+                        section.kind
+                    )));
+                };
+                limits::section(section.size, section.align, sh_flags.0)?;
+                for reloc in &section.relocations {
+                    let RelocationFlags::Elf { r_type } = reloc.flags else {
+                        return Err(Error("invalid relocation flags".into()));
+                    };
+                    limits::relocation(reloc.offset, r_type.0, is_rela, reloc.addend)?;
+                }
+            }
+            for symbol in &self.symbols {
+                limits::symbol(symbol.value, symbol.size)?;
+            }
+        }
         let reloc_names: Vec<_> = self
             .sections
             .iter()
@@ -631,7 +655,7 @@ impl<'a> Object<'a> {
             .collect();
 
         // Start calculating offsets of everything.
-        let mut writer = Writer::new(self.endian, self.elf_is_64(), buffer);
+        let mut writer = Writer::new(self.endian, is_64, buffer);
         writer.reserve_file_header();
 
         // Calculate size of section data.
@@ -685,6 +709,13 @@ impl<'a> Object<'a> {
             if !symbol.is_local() {
                 let section_index = symbol.section.id().map(|s| section_offsets[s.0].index);
                 symbol_offsets[index].index = writer.reserve_symbol_index(section_index);
+            }
+        }
+        if !is_64 {
+            for section in &self.sections {
+                for reloc in &section.relocations {
+                    limits::relocation_symbol(symbol_offsets[reloc.symbol.0].index.0)?;
+                }
             }
         }
         for (index, symbol) in self.symbols.iter().enumerate() {

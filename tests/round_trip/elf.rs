@@ -6,6 +6,8 @@ use object::{
 };
 use std::io::Write;
 
+mod limits;
+
 #[test]
 fn phnum_overflow() {
     let file_header = write::elf::FileHeader {
